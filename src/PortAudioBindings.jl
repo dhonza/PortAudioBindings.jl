@@ -110,7 +110,7 @@ function play(x::SampleArray; bsize=512)
     
     outid = Pa_GetDefaultOutputDevice()
     outinfo = unsafe_load(Pa_GetDeviceInfo(outid));
-    @info "output: $(unsafe_string(outinfo.name)), #channels: $(nchannels_)"
+    @debug "output: $(unsafe_string(outinfo.name)), #channels: $(nchannels_)"
     
     outParams = PaStreamParameters(outid, nchannels_, paFloat32, 
         outinfo.defaultHighInputLatency, C_NULL)
@@ -150,18 +150,16 @@ function play(x::SampleArray; bsize=512)
     paerr(err)
 end
 
-function record(; s=1.0, rate=44100.0, bsize=512)
-    error("FIX!")
+function record(; s=1.0, rate=44100.0, nins=nothing, bsize=512)
     nblocks = ceil(Int, s*rate/bsize)
-    @show nblocks
     
     err = Pa_Initialize() |> paerr
     
     indev = Pa_GetDefaultInputDevice()
     ininfo = unsafe_load(Pa_GetDeviceInfo(indev))
+    nins = isnothing(nins) ? ininfo.maxInputChannels : nins
     
-    numchannels = 1
-    inparams = PaStreamParameters(indev, numchannels, paFloat32, 
+    inparams = PaStreamParameters(indev, nins, paFloat32, 
         ininfo.defaultHighInputLatency, C_NULL)
     
     stream = Ref(Ptr{PaStream}(C_NULL))    
@@ -175,10 +173,13 @@ function record(; s=1.0, rate=44100.0, bsize=512)
         paClipOff,
         C_NULL,
         C_NULL)
-    paerr(err)
+    
+    if err != 0
+        return
+    end
 
-    samplebuf = zeros(Float32, numchannels, bsize)
-    samples = zeros(Float32, numchannels, nblocks * bsize)
+    samplebuf = zeros(Float32, nins, bsize)
+    samples = zeros(Float32, nins, nblocks * bsize)
     
     err = Pa_StartStream(stream[]) |> paerr
     
@@ -190,25 +191,25 @@ function record(; s=1.0, rate=44100.0, bsize=512)
     end
     
     err = Pa_Terminate() |> paerr
-    return samples
+    return SampleArray(samples', rate)
 end
 
-function recordresponse(x::SampleArray; indev=nothing, outdev=nothing, post::Time=1.0s, bsize=512)
+function recordresponse(x::SampleArray; indev=nothing, outdev=nothing, nins=nothing, post::Time=1.0s, bsize=512)
     err = Pa_Initialize() |> paerr
     post = tos(post)
     
-    noutchannels, nframes_, rate_ = nchannels(x), nframes(x), rate(x)
+    nouts, nframes_, rate_ = nchannels(x), nframes(x), rate(x)
     
     indev = isnothing(indev) ? Pa_GetDefaultInputDevice() : indev
     ininfo = unsafe_load(Pa_GetDeviceInfo(indev));
-    ninchannels = 2
-    inparams = PaStreamParameters(indev, ninchannels, paFloat32, ininfo.defaultHighInputLatency, C_NULL)
-    @debug "input: $(unsafe_string(ininfo.name)), #channels: $(ninchannels)"
+    nins = isnothing(nins) ? ininfo.maxInputChannels : nins
+    inparams = PaStreamParameters(indev, nins, paFloat32, ininfo.defaultHighInputLatency, C_NULL)
+    @debug "input: $(unsafe_string(ininfo.name)), #channels: $(nins)"
     
     outdev = isnothing(outdev) ? Pa_GetDefaultOutputDevice() : outdev
     outinfo = unsafe_load(Pa_GetDeviceInfo(outdev)); 
-    outparams = PaStreamParameters(outdev, noutchannels, paFloat32, outinfo.defaultHighInputLatency, C_NULL)
-    @debug "output: $(unsafe_string(outinfo.name)), #channels: $(noutchannels)"
+    outparams = PaStreamParameters(outdev, nouts, paFloat32, outinfo.defaultHighInputLatency, C_NULL)
+    @debug "output: $(unsafe_string(outinfo.name)), #channels: $(nouts)"
     
     stream = Ref(Ptr{PaStream}(C_NULL))    
     
@@ -221,12 +222,16 @@ function recordresponse(x::SampleArray; indev=nothing, outdev=nothing, post::Tim
         paClipOff,
         C_NULL,
         C_NULL) |> paerr
+    
+    if err != 0
+        return
+    end
 
     nframesrec = nframes_ + ceil(Int, post * rate_)
     @debug "input signal frames: $nframes_, frames to record: $nframesrec"
-    sampleinbuf = zeros(Float32, ninchannels, bsize)
-    sampleoutbuf = zeros(Float32, noutchannels, bsize)
-    y = similar(x, nframesrec, ninchannels)
+    sampleinbuf = zeros(Float32, nins, bsize)
+    sampleoutbuf = zeros(Float32, nouts, bsize)
+    y = similar(x, nframesrec, nins)
     samples = data(y)'
     samples .= 0
     
