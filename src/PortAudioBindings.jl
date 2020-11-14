@@ -34,7 +34,7 @@ end
 
 using SampleArrays
 
-export paerr, listdevices, device_id_by_name, device_id_default_in, device_id_default_out
+export paerr, PortAudio, listdevices, device_id_by_name, device_id_default_in, device_id_default_out
 export play, record, recordresponse
 
 function paerr(err)
@@ -45,9 +45,28 @@ function paerr(err)
     err
 end
 
-function listdevices()
-    Pa_Initialize() |> paerr
+mutable struct PortAudio
+    # TODO add some state variables, e.g., default devices, channels, sample rate?
+    function PortAudio()
+        err = Pa_Initialize() |> paerr
+        if err != 0
+            error("failed to initialize PortAudio!")
+        end
+        pa = new()
 
+        function f(pa_)
+            @async println("finalizing PortAudio")
+            err = Pa_Terminate() |> paerr
+            if err != 0
+                error("failed to initialize PortAudio!")
+            end
+        end
+
+        finalizer(f, pa)
+    end
+end
+
+function listdevices(::PortAudio)
     ndevices = Pa_GetDeviceCount()
     defin = Pa_GetDefaultInputDevice()
     defout = Pa_GetDefaultOutputDevice()
@@ -69,12 +88,11 @@ function listdevices()
         ))
         deviceName = unsafe_string(devinfo.name)
     end
-    Pa_Terminate() |> paerr
     devs
 end
 
-function device_id_by_name(name::AbstractString)
-    devs = listdevices()
+function device_id_by_name(pa::PortAudio, name::AbstractString)
+    devs = listdevices(pa)
     id = findfirst(e -> e.name == name, devs)
     if isnothing(id)
         error("PortAudio: unknown device: $name")
@@ -82,42 +100,28 @@ function device_id_by_name(name::AbstractString)
     id
 end
 
-function device_id_default_in()
-    err = Pa_Initialize() |> paerr
-    if err != 0
-        error("PortAudio failed!")
-    end
-    id = Pa_GetDefaultInputDevice()
-    Pa_Terminate() |> paerr
-    id
+function device_id_default_in(::PortAudio)
+    Pa_GetDefaultInputDevice()
 end
 
-function device_id_default_out()
-    err = Pa_Initialize() |> paerr
-    if err != 0 
-        error("PortAudio failed!")
-    end
-    id = Pa_GetDefaultOutputDevice()
-    Pa_Terminate() |> paerr
-    id
+function device_id_default_out(::PortAudio)
+    Pa_GetDefaultOutputDevice()
 end
 
-function play(x::SampleArray; bsize=512)
+function play(::PortAudio, x::SampleArray; outdev=nothing, bsize=512)
     nchannels_, nframes_, rate_ = nchannels(x), nframes(x), rate(x)
     
-    err = Pa_Initialize()
-    paerr(err)
-    
-    outid = Pa_GetDefaultOutputDevice()
-    outinfo = unsafe_load(Pa_GetDeviceInfo(outid));
+    outdev = isnothing(outdev) ? Pa_GetDefaultOutputDevice() : outdev
+    outinfo = unsafe_load(Pa_GetDeviceInfo(outdev));
+
     @debug "output: $(unsafe_string(outinfo.name)), #channels: $(nchannels_)"
     
-    outParams = PaStreamParameters(outid, nchannels_, paFloat32, 
-        outinfo.defaultHighInputLatency, C_NULL)
+    outParams = PaStreamParameters(outdev, nchannels_, paFloat32, 
+        outinfo.defaultHighOutputLatency, C_NULL)
     
     stream = Ref(Ptr{PaStream}(C_NULL))    
     
-    err = Pa_OpenStream(
+    Pa_OpenStream(
         stream,
         C_NULL,
         Ref(outParams),
@@ -125,13 +129,11 @@ function play(x::SampleArray; bsize=512)
         bsize,
         paClipOff,
         C_NULL,
-        C_NULL)
-    paerr(err)
+        C_NULL) |> paerr
 
     samplebuf = zeros(Float32, nchannels_, bsize)
     
-    err = Pa_StartStream(stream[])
-    paerr(err)
+    Pa_StartStream(stream[]) |> paerr
 
     samples = data(x)'
     
@@ -141,21 +143,18 @@ function play(x::SampleArray; bsize=512)
         highbuf = high-off+1
         samplebuf[:, 1:highbuf] .= samples[:, off:high]
         samplebuf[:, highbuf+1:end] .= 0
-        err = Pa_WriteStream(stream[], pointer(samplebuf), bsize)
-        paerr(err)
+        Pa_WriteStream(stream[], pointer(samplebuf), bsize) |> paerr
         off += bsize        
     end
-    
-    err = Pa_Terminate()
-    paerr(err)
+
+    Pa_StopStream(stream[]) |> paerr
+    Pa_CloseStream(stream[]) |> paerr
 end
 
-function record(; s=1.0, rate=44100.0, nins=nothing, bsize=512)
+function record(::PortAudio; s=1.0, rate=44100.0, indev=nothing, nins=nothing, bsize=512)
     nblocks = ceil(Int, s*rate/bsize)
-    
-    err = Pa_Initialize() |> paerr
-    
-    indev = Pa_GetDefaultInputDevice()
+        
+    indev = isnothing(indev) ? Pa_GetDefaultInputDevice() : indev
     ininfo = unsafe_load(Pa_GetDeviceInfo(indev))
     nins = isnothing(nins) ? ininfo.maxInputChannels : nins
     
@@ -172,7 +171,7 @@ function record(; s=1.0, rate=44100.0, nins=nothing, bsize=512)
         bsize,
         paClipOff,
         C_NULL,
-        C_NULL)
+        C_NULL) |> paerr
     
     if err != 0
         return
@@ -185,30 +184,32 @@ function record(; s=1.0, rate=44100.0, nins=nothing, bsize=512)
     
     off = 1
     for i in 1:nblocks
-        err = Pa_ReadStream(stream[], pointer(samplebuf), bsize) |> paerr
+        Pa_ReadStream(stream[], pointer(samplebuf), bsize) |> paerr
         samples[:, off:off+bsize-1] .= samplebuf
         off += bsize
     end
-    
-    err = Pa_Terminate() |> paerr
+
+    Pa_StopStream(stream[]) |> paerr
+    Pa_CloseStream(stream[]) |> paerr
+
     return SampleArray(samples', rate)
 end
 
-function recordresponse(x::SampleArray; indev=nothing, outdev=nothing, nins=nothing, post::Time=1.0s, bsize=512)
-    err = Pa_Initialize() |> paerr
+function recordresponse(::PortAudio, x::SampleArray; indev=nothing, outdev=nothing, nins=nothing, post::Time=1.0s, bsize=512)
     post = tos(post)
     
     nouts, nframes_, rate_ = nchannels(x), nframes(x), rate(x)
     
     indev = isnothing(indev) ? Pa_GetDefaultInputDevice() : indev
     ininfo = unsafe_load(Pa_GetDeviceInfo(indev));
-    nins = isnothing(nins) ? ininfo.maxInputChannels : nins
-    inparams = PaStreamParameters(indev, nins, paFloat32, ininfo.defaultHighInputLatency, C_NULL)
-    @debug "input: $(unsafe_string(ininfo.name)), #channels: $(nins)"
-    
     outdev = isnothing(outdev) ? Pa_GetDefaultOutputDevice() : outdev
     outinfo = unsafe_load(Pa_GetDeviceInfo(outdev)); 
-    outparams = PaStreamParameters(outdev, nouts, paFloat32, outinfo.defaultHighInputLatency, C_NULL)
+    nins = isnothing(nins) ? ininfo.maxInputChannels : nins
+
+    inparams = PaStreamParameters(indev, nins, paFloat32, 1000ininfo.defaultHighInputLatency, C_NULL)
+    @debug "input: $(unsafe_string(ininfo.name)), #channels: $(nins)"
+    
+    outparams = PaStreamParameters(outdev, nouts, paFloat32, ininfo.defaultHighOutputLatency, C_NULL)
     @debug "output: $(unsafe_string(outinfo.name)), #channels: $(nouts)"
     
     stream = Ref(Ptr{PaStream}(C_NULL))    
@@ -235,33 +236,52 @@ function recordresponse(x::SampleArray; indev=nothing, outdev=nothing, nins=noth
     samples = data(y)'
     samples .= 0
     
-    err = Pa_StartStream(stream[]) |> paerr
+    Pa_StartStream(stream[]) |> paerr
 
     insignal = data(x)'
     
     off = 1
+    werr = 0
+    rerr = 0
     while off <= nframes_
         high = min(off + bsize -1, nframes_)
         highbuf = high-off+1
         sampleoutbuf[:, 1:highbuf] .= insignal[:, off:high]
         sampleoutbuf[:, highbuf+1:end] .= 0
-        err = Pa_WriteStream(stream[], pointer(sampleoutbuf), bsize) |> paerr
-        err = Pa_ReadStream(stream[], pointer(sampleinbuf), bsize) |> paerr
+        
+        err = Pa_WriteStream(stream[], pointer(sampleoutbuf), bsize)
+        if err != 0
+            werr = err
+        end
+
+        err = Pa_ReadStream(stream[], pointer(sampleinbuf), bsize)
+        if err != 0
+            rerr = err
+        end
+
         samples[:, off:off+bsize-1] .= sampleinbuf
         
         off += bsize
     end
     
     while off <= nframesrec
-        err = Pa_ReadStream(stream[], pointer(sampleinbuf), bsize) |> paerr
+        err = Pa_ReadStream(stream[], pointer(sampleinbuf), bsize)
+        if err != 0
+            rerr = err
+        end
         high = min(off + bsize -1, nframesrec)
         highbuf = high-off+1
         samples[:, off:high] .= sampleinbuf[:, 1:highbuf]
         
         off += bsize
     end
-    
-    err = Pa_Terminate() |> paerr
+
+    paerr(werr)
+    paerr(rerr)
+
+    Pa_StopStream(stream[]) |> paerr
+    Pa_CloseStream(stream[]) |> paerr
+
     y
 end
 

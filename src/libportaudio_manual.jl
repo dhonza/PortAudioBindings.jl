@@ -12,11 +12,6 @@
 const paFloat32 = 0x00000001
 const paNonInterleaved = 0x80000000
 
-# Skipping MacroDefinition: paNoFlag ( ( PaStreamFlags ) 0 )
-# Skipping MacroDefinition: paClipOff ( ( PaStreamFlags ) 0x00000001 )
-# Skipping MacroDefinition: paDitherOff ( ( PaStreamFlags ) 0x00000002 )
-# Skipping MacroDefinition: paNeverDropInput ( ( PaStreamFlags ) 0x00000004 )
-# Skipping MacroDefinition: paPrimeOutputBuffersUsingStreamCallback ( ( PaStreamFlags ) 0x00000008 )
 # Skipping MacroDefinition: paPlatformSpecificFlags ( ( PaStreamFlags ) 0xFFFF0000 )
 # Skipping MacroDefinition: paInputUnderflow ( ( PaStreamCallbackFlags ) 0x00000001 )
 # Skipping MacroDefinition: paInputOverflow ( ( PaStreamCallbackFlags ) 0x00000002 )
@@ -24,7 +19,11 @@ const paNonInterleaved = 0x80000000
 # Skipping MacroDefinition: paOutputOverflow ( ( PaStreamCallbackFlags ) 0x00000008 )
 # Skipping MacroDefinition: paPrimingOutput ( ( PaStreamCallbackFlags ) 0x00000010 )
 
+const paNoFlag = 0x00000000
 const paClipOff = 0x00000001
+const paDitherOff = 0x00000002
+const paNeverDropInput = 0x00000004
+const paPrimeOutputBuffersUsingStreamCallback = 0x00000008
 
 # Skipping Typedef: CXType_FunctionProto PaStreamCallback
 const PaStreamCallback = Cvoid
