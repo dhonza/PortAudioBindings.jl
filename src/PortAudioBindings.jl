@@ -97,7 +97,7 @@ function device_id_by_name(pa::PortAudio, name::AbstractString)
     if isnothing(id)
         error("PortAudio: unknown device: $name")
     end
-    id
+    id-1
 end
 
 function device_id_default_in(::PortAudio)
@@ -206,7 +206,7 @@ function recordresponse(::PortAudio, x::SampleArray; indev=nothing, outdev=nothi
     outinfo = unsafe_load(Pa_GetDeviceInfo(outdev)); 
     nins = isnothing(nins) ? ininfo.maxInputChannels : nins
 
-    inparams = PaStreamParameters(indev, nins, paFloat32, 1000ininfo.defaultHighInputLatency, C_NULL)
+    inparams = PaStreamParameters(indev, nins, paFloat32, ininfo.defaultHighInputLatency, C_NULL)
     @debug "input: $(unsafe_string(ininfo.name)), #channels: $(nins)"
     
     outparams = PaStreamParameters(outdev, nouts, paFloat32, ininfo.defaultHighOutputLatency, C_NULL)
@@ -242,16 +242,22 @@ function recordresponse(::PortAudio, x::SampleArray; indev=nothing, outdev=nothi
     
     off = 1
     werr = 0
+    woffs = []
     rerr = 0
     while off <= nframes_
         high = min(off + bsize -1, nframes_)
         highbuf = high-off+1
         sampleoutbuf[:, 1:highbuf] .= insignal[:, off:high]
         sampleoutbuf[:, highbuf+1:end] .= 0
+        # @show high
+        # @show highbuf
+        # @show off
+        # @show 1:highbuf, off:high
         
         err = Pa_WriteStream(stream[], pointer(sampleoutbuf), bsize)
         if err != 0
             werr = err
+            push!(woffs, off)
         end
 
         err = Pa_ReadStream(stream[], pointer(sampleinbuf), bsize)
@@ -260,7 +266,9 @@ function recordresponse(::PortAudio, x::SampleArray; indev=nothing, outdev=nothi
         end
 
         samples[:, off:off+bsize-1] .= sampleinbuf
-        
+        # if off > 1024
+            # break
+        # end
         off += bsize
     end
     
@@ -275,11 +283,24 @@ function recordresponse(::PortAudio, x::SampleArray; indev=nothing, outdev=nothi
         
         off += bsize
     end
-
+    
     paerr(werr)
+    @error "offsets: $woffs"
     paerr(rerr)
-
+    
     Pa_StopStream(stream[]) |> paerr
+    i = 1
+    while true
+        err = Pa_IsStreamActive(stream[])
+        if err != 1
+            break
+        end
+        @show i, err
+        Pa_Sleep(1000);
+        i += 1
+    end
+    
+    # Pa_AbortStream(stream[]) |> paerr
     Pa_CloseStream(stream[]) |> paerr
 
     y
